@@ -12,6 +12,7 @@ type Query struct {
 	Long     float64
 	Category string
 	Radius   float64
+	Link     string
 }
 
 type Scored struct {
