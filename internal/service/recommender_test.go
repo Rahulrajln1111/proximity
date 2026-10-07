@@ -2,10 +2,12 @@ package service_test
 
 import (
 	"math/rand"
+	"strings"
 	"testing"
 
 	"proximity/internal/domain"
 	"proximity/internal/index"
+	"proximity/internal/roadnet"
 	"proximity/internal/service"
 )
 
@@ -21,7 +23,7 @@ func (s scanIndex) Candidates(q domain.Query) []domain.Location {
 	return out
 }
 
-func TestGridMatchesScan(t *testing.T) {
+func lattice() []domain.Location {
 	cats := []string{
 		"bank", "cafe", "hospital", "park",
 		"pharmacy", "restaurant", "school", "store",
@@ -40,11 +42,20 @@ func TestGridMatchesScan(t *testing.T) {
 			id++
 		}
 	}
+	return locs
+}
 
-	grid := service.NewRecommender(index.NewGridIndex(locs))
-	scan := service.NewRecommender(scanIndex{locs})
+func TestGridMatchesScan(t *testing.T) {
+	locs := lattice()
+	grid := domain.NewGrid(locs)
+	src := roadnet.NewCache(grid, roadnet.CompleteNetwork(grid, locs))
 
+	a := service.NewRecommender(grid, index.NewGridIndex(grid, locs), src)
+	b := service.NewRecommender(grid, scanIndex{locs}, src)
+
+	cats := []string{"bank", "cafe", "hospital", "park", "pharmacy", "restaurant", "school", "store"}
 	rng := rand.New(rand.NewSource(42))
+
 	for n := 0; n < 500; n++ {
 		q := domain.Query{
 			Lat:      rng.Float64(),
@@ -53,8 +64,14 @@ func TestGridMatchesScan(t *testing.T) {
 			Radius:   0.02 + rng.Float64()*0.4,
 		}
 
-		got := grid.Recommend(q, 10)
-		want := scan.Recommend(q, 10)
+		got, err := a.Recommend(q, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := b.Recommend(q, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		if len(got) != len(want) {
 			t.Fatalf("query %+v: got %v want %v", q, got, want)
@@ -67,16 +84,152 @@ func TestGridMatchesScan(t *testing.T) {
 	}
 }
 
-func TestRankingIsWalkNotStraightLine(t *testing.T) {
-	locs := []domain.Location{
-		{ID: 1, Lat: 0.1, Long: 0.1, Category: "bank"},
-		{ID: 2, Lat: 0.19, Long: 0.0, Category: "bank"},
+func corners() []domain.Location {
+	return []domain.Location{
+		{ID: 1, Lat: 0, Long: 0, Category: "bank"},
+		{ID: 2, Lat: 0, Long: 1, Category: "bank"},
+		{ID: 3, Lat: 1, Long: 0, Category: "bank"},
+		{ID: 4, Lat: 1, Long: 1, Category: "bank"},
 	}
-	rec := service.NewRecommender(scanIndex{locs})
+}
 
-	got := rec.Recommend(domain.Query{Lat: 0, Long: 0, Category: "bank", Radius: 0.5}, 10)
+func TestMissingEdgeLengthensRoute(t *testing.T) {
+	locs := corners()
+	grid := domain.NewGrid(locs)
 
-	if len(got) != 2 || got[0] != 2 || got[1] != 1 {
-		t.Fatalf("expected [2 1], got %v", got)
+	// loop over the long way: the direct (0,0)-(1,0) road is missing
+	link := strings.Join([]string{
+		"0 0 1 0",
+		"1 0 1 1",
+		"1 1 0 1",
+	}, "\n")
+
+	src := roadnet.NewCache(grid, roadnet.CompleteNetwork(grid, locs))
+	rec := service.NewRecommender(grid, index.NewGridIndex(grid, locs), src)
+
+	got, err := rec.Recommend(domain.Query{
+		Lat: 0, Long: 0, Category: "bank", Radius: 5, Link: link,
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []int{1, 2, 4, 3}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
+func TestFullGridIsManhattan(t *testing.T) {
+	locs := corners()
+	grid := domain.NewGrid(locs)
+
+	src := roadnet.NewCache(grid, roadnet.CompleteNetwork(grid, locs))
+	rec := service.NewRecommender(grid, index.NewGridIndex(grid, locs), src)
+
+	got, err := rec.Recommend(domain.Query{
+		Lat: 0, Long: 0, Category: "bank", Radius: 5,
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []int{1, 2, 3, 4}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
+func TestUnreachableRankedLast(t *testing.T) {
+	locs := corners()
+	grid := domain.NewGrid(locs)
+
+	// id 2 sits at (0,1) which no road reaches
+	link := strings.Join([]string{
+		"0 0 0 1",
+		"0 1 1 1",
+	}, "\n")
+
+	src := roadnet.NewCache(grid, roadnet.CompleteNetwork(grid, locs))
+	rec := service.NewRecommender(grid, index.NewGridIndex(grid, locs), src)
+
+	got, err := rec.Recommend(domain.Query{
+		Lat: 0, Long: 0, Category: "bank", Radius: 5, Link: link,
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []int{1, 3, 4, 2}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
+func BenchmarkRecommendFullGrid(b *testing.B) {
+	locs := lattice()
+	grid := domain.NewGrid(locs)
+	src := roadnet.NewCache(grid, roadnet.CompleteNetwork(grid, locs))
+	rec := service.NewRecommender(grid, index.NewGridIndex(grid, locs), src)
+
+	q := domain.Query{Lat: 0.25, Long: 0.25, Category: "bank", Radius: 0.1}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := rec.Recommend(q, 10); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRecommendWideRadius(b *testing.B) {
+	locs := lattice()
+	grid := domain.NewGrid(locs)
+	src := roadnet.NewCache(grid, roadnet.CompleteNetwork(grid, locs))
+	rec := service.NewRecommender(grid, index.NewGridIndex(grid, locs), src)
+
+	q := domain.Query{Lat: 0.5, Long: 0.5, Category: "bank", Radius: 1.5}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := rec.Recommend(q, 10); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestRadiusIsStraightLine(t *testing.T) {
+	locs := []domain.Location{
+		{ID: 1, Lat: 0, Long: 0.09, Category: "bank"},
+		{ID: 2, Lat: 0, Long: 0.11, Category: "bank"},
+	}
+	grid := domain.NewGrid(locs)
+	src := roadnet.NewCache(grid, roadnet.CompleteNetwork(grid, locs))
+	rec := service.NewRecommender(grid, index.NewGridIndex(grid, locs), src)
+
+	got, err := rec.Recommend(domain.Query{
+		Lat: 0, Long: 0, Category: "bank", Radius: 0.1,
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("radius filter should keep only id 1, got %v", got)
 	}
 }
