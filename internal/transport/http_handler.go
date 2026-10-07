@@ -42,7 +42,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ids := h.rec.Recommend(q, topN)
+	ids, err := h.rec.Recommend(q, topN)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	_ = json.NewEncoder(w).Encode(result{IDs: ids})
 }
 
@@ -72,7 +77,13 @@ func readQuery(r *http.Request) (domain.Query, error) {
 		return domain.Query{}, fmt.Errorf("missing parameter %q", "cat")
 	}
 
-	return domain.Query{Lat: lat, Long: long, Category: cat, Radius: rad}, nil
+	return domain.Query{
+		Lat:      lat,
+		Long:     long,
+		Category: cat,
+		Radius:   rad,
+		Link:     v.Get("link"),
+	}, nil
 }
 
 func number(raw, name string) (float64, error) {
