@@ -5,8 +5,10 @@ import (
 	"log"
 	"net/http"
 
+	"proximity/internal/domain"
 	"proximity/internal/index"
 	"proximity/internal/loader"
+	"proximity/internal/roadnet"
 	"proximity/internal/service"
 	"proximity/internal/transport"
 )
@@ -22,7 +24,10 @@ func main() {
 	}
 	log.Printf("loaded %d locations from %s", len(locations), *csvPath)
 
-	rec := service.NewRecommender(index.NewGridIndex(locations))
+	grid := domain.NewGrid(locations)
+	base := roadnet.CompleteNetwork(grid, locations)
+
+	rec := service.NewRecommender(grid, index.NewGridIndex(grid, locations), roadnet.NewCache(grid, base))
 	handler := transport.NewHandler(rec)
 
 	mux := http.NewServeMux()
