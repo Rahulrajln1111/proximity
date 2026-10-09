@@ -1,2 +1,12 @@
 *.csv
 !locations.csv
+
+# Build output
+proximity-api
+server.log
+
+# Assignment / report artifacts (not part of the public project)
+report.md
+report.html
+proximity_report.pdf
+image.png
